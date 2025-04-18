@@ -1,5 +1,6 @@
 from telegram.ext import Application, MessageHandler, CommandHandler, filters
 import logging
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -29,7 +30,6 @@ async def on_startup(context):
         logger.error("JobQueue не инициализирован! Убедитесь, что установлен python-telegram-bot[job-queue]")
         return
     # Настраиваем периодическое сообщение
-    # Отправляем сообщение каждые 6 часов (6 * 60 * 60 секунд)
     context.job_queue.run_repeating(send_periodic_message, interval=6*60*60, first=10)
     logger.info("Периодические задачи настроены")
 
@@ -82,7 +82,15 @@ async def error_handler(update, context):
             text=f"Произошла ошибка: {context.error}"
         )
 
-def main():
+async def shutdown(application):
+    logger.info("Останавливаем бота...")
+    if application.job_queue:
+        application.job_queue.stop()
+    await application.stop()
+    await application.bot.close()
+    logger.info("Бот остановлен")
+
+async def main():
     # Создаём Application
     application = Application.builder().token(TOKEN).build()
     
@@ -99,13 +107,22 @@ def main():
         application.job_queue.run_once(on_startup, 0)
 
     logger.info("Бот запущен, жду сообщений...")
-    application.run_polling(allowed_updates=["message"])
+    try:
+        await application.run_polling(allowed_updates=["message"], stop_signals=[])
+    finally:
+        await shutdown(application)
 
 if __name__ == '__main__':
     while True:
         try:
-            main()
+            # Создаём новый цикл событий для каждой итерации
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(main())
         except Exception as e:
             logger.error(f"Бот упал с ошибкой: {e}. Перезапускаю...")
             import time
             time.sleep(10)
+        finally:
+            # Закрываем цикл событий после каждой итерации
+            loop.close()
