@@ -1,10 +1,8 @@
 from telegram.ext import Application, MessageHandler, CommandHandler, filters
 import logging
-import asyncio
-import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import signal
-import socketserver
+import json
+import threading
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -17,33 +15,45 @@ CREATOR_ID = 1321220840
 # Вставьте ID группы
 GROUP_CHAT_ID = -180025934882
 
-# Простой HTTP-сервер для Render
-class DummyHandler(BaseHTTPRequestHandler):
+# Создаём Application
+application = Application.builder().token(TOKEN).build()
+
+# Порт для HTTP-сервера
+PORT = 8080
+
+# Класс для обработки HTTP-запросов от Telegram
+class TelegramWebhookHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            update = json.loads(post_data.decode('utf-8'))
+            logger.info(f"Получено обновление: {update}")
+            
+            # Обрабатываем обновление
+            asyncio.run_coroutine_threadsafe(
+                application.update_queue.put(update),
+                loop=asyncio.get_event_loop()
+            )
+            
+            self.send_response(200)
+            self.end_headers()
+        except Exception as e:
+            logger.error(f"Ошибка при обработке вебхука: {e}")
+            self.send_response(500)
+            self.end_headers()
+
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot is running")
 
-# Глобальные переменные для HTTP-сервера
-httpd = None
-httpd_thread = None
-
-def run_dummy_server():
-    global httpd
-    httpd = socketserver.TCPServer(("", 8080), DummyHandler)
-    logger.info("Запущен HTTP-сервер на порту 8080")
-    httpd.serve_forever()
-
-def stop_dummy_server():
-    global httpd, httpd_thread
-    if httpd:
-        logger.info("Останавливаем HTTP-сервер...")
-        httpd.shutdown()
-        httpd.server_close()
-        logger.info("HTTP-сервер остановлен")
-    if httpd_thread:
-        httpd_thread.join()
+# Функция для запуска HTTP-сервера
+def run_webhook_server():
+    server = HTTPServer(("", PORT), TelegramWebhookHandler)
+    logger.info(f"Запущен HTTP-сервер для вебхуков на порту {PORT}")
+    server.serve_forever()
 
 # Функция для отправки периодического сообщения
 async def send_periodic_message(context):
@@ -116,29 +126,7 @@ async def error_handler(update, context):
             text=f"Произошла ошибка: {context.error}"
         )
 
-async def shutdown(application):
-    logger.info("Останавливаем бота...")
-    try:
-        if application.job_queue:
-            application.job_queue.stop()
-            logger.info("JobQueue остановлен")
-        if application.running:
-            await application.stop()
-            logger.info("Application остановлен")
-        await application.bot.close()
-        logger.info("Bot закрыт")
-    except Exception as e:
-        logger.error(f"Ошибка при остановке бота: {e}")
-
 async def main():
-    # Запускаем HTTP-сервер в отдельном потоке
-    global httpd_thread
-    httpd_thread = threading.Thread(target=run_dummy_server, daemon=True)
-    httpd_thread.start()
-
-    # Создаём Application
-    application = Application.builder().token(TOKEN).build()
-    
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & filters.ChatType.PRIVATE, forward_message))
@@ -150,36 +138,35 @@ async def main():
     else:
         application.job_queue.run_once(on_startup, 0)
 
-    logger.info("Бот запущен, жду сообщений...")
-    try:
-        await application.run_polling(allowed_updates=["message"], stop_signals=[signal.SIGINT, signal.SIGTERM])
-    except Exception as e:
-        logger.error(f"Ошибка в run_polling: {e}")
-        raise
-    finally:
-        await shutdown(application)
-        stop_dummy_server()
+    # Запускаем бота
+    await application.initialize()
+    await application.start()
+
+    # Получаем URL от Render
+    # Замените YOUR_SERVICE_NAME на имя вашего сервиса (например, mytelegrambot)
+    webhook_url = "https://mytelegrambot.onrender.com/webhook"
+    await application.bot.set_webhook(webhook_url)
+    logger.info(f"Установлен вебхук: {webhook_url}")
+
+    # Запускаем HTTP-сервер в отдельном потоке
+    threading.Thread(target=run_webhook_server, daemon=True).start()
+
+    logger.info("Бот запущен, жду обновлений через вебхуки...")
+
+    # Держим приложение запущенным
+    while True:
+        await asyncio.sleep(3600)  # Спим 1 час, чтобы не завершать приложение
 
 if __name__ == '__main__':
-    while True:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(main())
-        except Exception as e:
-            logger.error(f"Бот упал с ошибкой: {e}. Перезапускаю...")
-            # Отменяем все задачи и завершаем асинхронные генераторы
-            pending = asyncio.all_tasks(loop=loop)
-            for task in pending:
-                task.cancel()
-            try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
-            except Exception as e:
-                logger.error(f"Ошибка при завершении асинхронных генераторов: {e}")
-            import time
-            time.sleep(10)
-        finally:
-            try:
-                loop.close()
-            except Exception as e:
-                logger.error(f"Ошибка при закрытии цикла событий: {e}")
+    # Создаём цикл событий
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("Останавливаем бота...")
+        loop.run_until_complete(application.stop())
+        loop.run_until_complete(application.bot.delete_webhook())
+        logger.info("Вебхук удалён")
+    finally:
+        loop.close()
+        logger.info("Цикл событий закрыт")
