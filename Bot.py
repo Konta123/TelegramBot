@@ -9,8 +9,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Вставьте ваш токен от BotFather
-TOKEN = '7119450062:AAGuCqIJLfpUQjeabJEwmKV1mObGhCW1BQw'
+# Вставьте ваш НОВЫЙ токен от BotFather
+TOKEN = '7119450062:AAGuCqIJLfpUQjeabJEwmKV1mObGhCW1BQw'  # Замените на новый токен
 # Вставьте ваш Telegram ID
 CREATOR_ID = 1321220840
 # Вставьте ID группы
@@ -153,7 +153,6 @@ async def shutdown():
         if application.running:
             await application.stop()
             logger.info("Application остановлен")
-        # Проверяем, не закрыт ли бот
         bot_session = getattr(application.bot, '_session', None)
         if bot_session and not bot_session.closed:
             await application.bot.close()
