@@ -10,7 +10,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Вставьте ваш токен от BotFather
-TOKEN = '719458062:AAGbrrY21H86FiagYOm4CaevbYqeHdk8'
+TOKEN = '7119450062:AAGuCqIJLfpUQjeabJEwmKV1mObGhCW1BQw'
 # Вставьте ваш Telegram ID
 CREATOR_ID = 1321220840
 # Вставьте ID группы
