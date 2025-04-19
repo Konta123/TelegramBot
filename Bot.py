@@ -3,17 +3,18 @@ import logging
 import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import signal
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Вставьте ваш токен от BotFather
-TOKEN = '7119450062:AAGbrry2lh86F1qajgvOm4Cbaevhq0eHkd8'
+TOKEN = '719458062:AAGbrrY21H86FiagYOm4CaevbYqeHdk8'
 # Вставьте ваш Telegram ID
 CREATOR_ID = 1321220840
 # Вставьте ID группы
-GROUP_CHAT_ID = -1002250348882
+GROUP_CHAT_ID = -180025934882
 
 # Простой HTTP-сервер для Render
 class DummyHandler(BaseHTTPRequestHandler):
@@ -23,10 +24,20 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is running")
 
+httpd = None  # Глобальная переменная для HTTP-сервера
+
 def run_dummy_server():
-    server = HTTPServer(("", 8080), DummyHandler)
+    global httpd
+    httpd = HTTPServer(("", 8080), DummyHandler)
     logger.info("Запущен HTTP-сервер на порту 8080")
-    server.serve_forever()
+    httpd.serve_forever()
+
+def stop_dummy_server():
+    global httpd
+    if httpd:
+        logger.info("Останавливаем HTTP-сервер...")
+        httpd.server_close()
+        logger.info("HTTP-сервер остановлен")
 
 # Функция для отправки периодического сообщения
 async def send_periodic_message(context):
@@ -45,7 +56,7 @@ async def send_periodic_message(context):
 # Callback для настройки периодических задач после запуска
 async def on_startup(context):
     if context.job_queue is None:
-        logger.error("JobQueue не инициализирован! Установите python-telegram-bot[job-queue]")
+        logger.error("JobQueue не инициализирован! Убедитесь, что установлен python-telegram-bot[job-queue]")
         return
     context.job_queue.run_repeating(send_periodic_message, interval=6*60*60, first=10)
     logger.info("Периодические задачи настроены")
@@ -132,22 +143,32 @@ async def main():
 
     logger.info("Бот запущен, жду сообщений...")
     try:
-        await application.run_polling(allowed_updates=["message"], stop_signals=[])
+        await application.run_polling(allowed_updates=["message"], stop_signals=[signal.SIGINT, signal.SIGTERM])
     except Exception as e:
         logger.error(f"Ошибка в run_polling: {e}")
         raise
     finally:
         await shutdown(application)
+        stop_dummy_server()  # Останавливаем HTTP-сервер
 
 if __name__ == '__main__':
     while True:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             loop.run_until_complete(main())
         except Exception as e:
             logger.error(f"Бот упал с ошибкой: {e}. Перезапускаю...")
+            # Ждём завершения всех задач перед закрытием цикла
+            pending = asyncio.all_tasks(loop=loop)
+            for task in pending:
+                task.cancel()
+            loop.run_until_complete(loop.shutdown_asyncgens())
             import time
             time.sleep(10)
         finally:
-            loop.close()
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
+            except Exception as e:
+                logger.error(f"Ошибка при закрытии цикла событий: {e}")
