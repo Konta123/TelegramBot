@@ -4,6 +4,7 @@ import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import signal
+import socketserver
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -24,20 +25,25 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is running")
 
-httpd = None  # Глобальная переменная для HTTP-сервера
+# Глобальные переменные для HTTP-сервера
+httpd = None
+httpd_thread = None
 
 def run_dummy_server():
     global httpd
-    httpd = HTTPServer(("", 8080), DummyHandler)
+    httpd = socketserver.TCPServer(("", 8080), DummyHandler)
     logger.info("Запущен HTTP-сервер на порту 8080")
     httpd.serve_forever()
 
 def stop_dummy_server():
-    global httpd
+    global httpd, httpd_thread
     if httpd:
         logger.info("Останавливаем HTTP-сервер...")
+        httpd.shutdown()
         httpd.server_close()
         logger.info("HTTP-сервер остановлен")
+    if httpd_thread:
+        httpd_thread.join()
 
 # Функция для отправки периодического сообщения
 async def send_periodic_message(context):
@@ -56,7 +62,7 @@ async def send_periodic_message(context):
 # Callback для настройки периодических задач после запуска
 async def on_startup(context):
     if context.job_queue is None:
-        logger.error("JobQueue не инициализирован! Убедитесь, что установлен python-telegram-bot[job-queue]")
+        logger.error("JobQueue не инициализирован! Установите python-telegram-bot[job-queue]")
         return
     context.job_queue.run_repeating(send_periodic_message, interval=6*60*60, first=10)
     logger.info("Периодические задачи настроены")
@@ -116,8 +122,9 @@ async def shutdown(application):
         if application.job_queue:
             application.job_queue.stop()
             logger.info("JobQueue остановлен")
-        await application.stop()
-        logger.info("Application остановлен")
+        if application.running:
+            await application.stop()
+            logger.info("Application остановлен")
         await application.bot.close()
         logger.info("Bot закрыт")
     except Exception as e:
@@ -125,7 +132,9 @@ async def shutdown(application):
 
 async def main():
     # Запускаем HTTP-сервер в отдельном потоке
-    threading.Thread(target=run_dummy_server, daemon=True).start()
+    global httpd_thread
+    httpd_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    httpd_thread.start()
 
     # Создаём Application
     application = Application.builder().token(TOKEN).build()
@@ -149,7 +158,7 @@ async def main():
         raise
     finally:
         await shutdown(application)
-        stop_dummy_server()  # Останавливаем HTTP-сервер
+        stop_dummy_server()
 
 if __name__ == '__main__':
     while True:
@@ -159,16 +168,18 @@ if __name__ == '__main__':
             loop.run_until_complete(main())
         except Exception as e:
             logger.error(f"Бот упал с ошибкой: {e}. Перезапускаю...")
-            # Ждём завершения всех задач перед закрытием цикла
+            # Отменяем все задачи и завершаем асинхронные генераторы
             pending = asyncio.all_tasks(loop=loop)
             for task in pending:
                 task.cancel()
-            loop.run_until_complete(loop.shutdown_asyncgens())
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception as e:
+                logger.error(f"Ошибка при завершении асинхронных генераторов: {e}")
             import time
             time.sleep(10)
         finally:
             try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
                 loop.close()
             except Exception as e:
                 logger.error(f"Ошибка при закрытии цикла событий: {e}")
