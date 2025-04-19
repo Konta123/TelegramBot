@@ -9,8 +9,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Вставьте ваш НОВЫЙ токен от BotFather
-TOKEN = '7119450062:AAGuCqIJLfpUQjeabJEwmKV1mObGhCW1BQw'  # Замените на новый токен
+# Вставьте ваш токен от BotFather
+TOKEN = '7119450062:AAGuCqIJLfpUQjeabJEwmKV1mObGhCW1BQw'
 # Вставьте ваш Telegram ID
 CREATOR_ID = 1321220840
 # Вставьте ID группы
@@ -86,6 +86,7 @@ async def send_periodic_message(context):
         logger.info(f"Отправлено периодическое сообщение в группу {GROUP_CHAT_ID}")
     except Exception as e:
         logger.error(f"Ошибка при отправке периодического сообщения: {e}")
+        raise  # Поднимаем исключение, чтобы бот перезапустился
 
 # Callback для настройки периодических задач после запуска
 async def on_startup(context):
@@ -143,6 +144,7 @@ async def error_handler(update, context):
             chat_id=CREATOR_ID,
             text=f"Произошла ошибка: {context.error}"
         )
+    raise  # Поднимаем исключение, чтобы бот перезапустился
 
 async def shutdown():
     logger.info("Останавливаем бота...")
@@ -163,6 +165,7 @@ async def shutdown():
         logger.error(f"Ошибка при остановке бота: {e}")
 
 async def main():
+    global application
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & filters.ChatType.PRIVATE, forward_message))
@@ -179,7 +182,6 @@ async def main():
         application.job_queue.run_once(on_startup, 0)
 
     # Устанавливаем вебхук
-    # Замените YOUR_SERVICE_NAME на имя вашего сервиса (например, mytelegrambot)
     webhook_url = "https://mytelegrambot.onrender.com/webhook"
     await application.bot.set_webhook(webhook_url)
     logger.info(f"Установлен вебхук: {webhook_url}")
@@ -199,30 +201,29 @@ async def main():
             break
 
 if __name__ == '__main__':
-    # Создаём цикл событий
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Получен сигнал остановки")
-    except Exception as e:
-        logger.error(f"Бот упал с ошибкой: {e}")
-    finally:
-        # Останавливаем бота и HTTP-сервер
-        loop.run_until_complete(shutdown())
-        stop_webhook_server()
-        # Отменяем все задачи
-        pending = asyncio.all_tasks(loop=loop)
-        for task in pending:
-            task.cancel()
-        # Завершаем асинхронные генераторы
+    while True:
         try:
-            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(main())
         except Exception as e:
-            logger.error(f"Ошибка при завершении асинхронных генераторов: {e}")
-        # Закрываем цикл событий
-        try:
-            loop.close()
-            logger.info("Цикл событий закрыт")
-        except Exception as e:
-            logger.error(f"Ошибка при закрытии цикла событий: {e}")
+            logger.error(f"Бот упал с ошибкой: {e}. Перезапускаю...")
+            import time
+            time.sleep(10)
+        finally:
+            loop.run_until_complete(shutdown())
+            stop_webhook_server()
+            pending = asyncio.all_tasks(loop=loop)
+            for task in pending:
+                task.cancel()
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception as e:
+                logger.error(f"Ошибка при завершении асинхронных генераторов: {e}")
+            try:
+                loop.close()
+                logger.info("Цикл событий закрыт")
+            except Exception as e:
+                logger.error(f"Ошибка при закрытии цикла событий: {e}")
+            # Пересоздаём Application для следующей итерации
+            application = Application.builder().token(TOKEN).build()
