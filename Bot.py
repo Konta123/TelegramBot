@@ -1,6 +1,8 @@
 from telegram.ext import Application, MessageHandler, CommandHandler, filters
 import logging
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -10,11 +12,27 @@ logger = logging.getLogger(__name__)
 TOKEN = '7119450062:AAGbrry2lh86F1qajgvOm4Cbaevhq0eHkd8'
 # Вставьте ваш Telegram ID
 CREATOR_ID = 1321220840
-# Вставьте ID группы (например, -987654321)
+# Вставьте ID группы
 GROUP_CHAT_ID = -1002250348882
+
+# Простой HTTP-сервер для Render
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def run_dummy_server():
+    server = HTTPServer(("", 8080), DummyHandler)
+    logger.info("Запущен HTTP-сервер на порту 8080")
+    server.serve_forever()
 
 # Функция для отправки периодического сообщения
 async def send_periodic_message(context):
+    if not context.application.running:
+        logger.warning("Application не запущен, пропускаю отправку сообщения")
+        return
     try:
         await context.bot.send_message(
             chat_id=GROUP_CHAT_ID,
@@ -27,9 +45,8 @@ async def send_periodic_message(context):
 # Callback для настройки периодических задач после запуска
 async def on_startup(context):
     if context.job_queue is None:
-        logger.error("JobQueue не инициализирован! Убедитесь, что установлен python-telegram-bot[job-queue]")
+        logger.error("JobQueue не инициализирован! Установите python-telegram-bot[job-queue]")
         return
-    # Настраиваем периодическое сообщение
     context.job_queue.run_repeating(send_periodic_message, interval=6*60*60, first=10)
     logger.info("Периодические задачи настроены")
 
@@ -84,13 +101,21 @@ async def error_handler(update, context):
 
 async def shutdown(application):
     logger.info("Останавливаем бота...")
-    if application.job_queue:
-        application.job_queue.stop()
-    await application.stop()
-    await application.bot.close()
-    logger.info("Бот остановлен")
+    try:
+        if application.job_queue:
+            application.job_queue.stop()
+            logger.info("JobQueue остановлен")
+        await application.stop()
+        logger.info("Application остановлен")
+        await application.bot.close()
+        logger.info("Bot закрыт")
+    except Exception as e:
+        logger.error(f"Ошибка при остановке бота: {e}")
 
 async def main():
+    # Запускаем HTTP-сервер в отдельном потоке
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
     # Создаём Application
     application = Application.builder().token(TOKEN).build()
     
@@ -103,19 +128,20 @@ async def main():
     if application.job_queue is None:
         logger.error("JobQueue не доступен! Установите python-telegram-bot[job-queue]")
     else:
-        # Добавляем callback для настройки JobQueue после запуска
         application.job_queue.run_once(on_startup, 0)
 
     logger.info("Бот запущен, жду сообщений...")
     try:
         await application.run_polling(allowed_updates=["message"], stop_signals=[])
+    except Exception as e:
+        logger.error(f"Ошибка в run_polling: {e}")
+        raise
     finally:
         await shutdown(application)
 
 if __name__ == '__main__':
     while True:
         try:
-            # Создаём новый цикл событий для каждой итерации
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(main())
@@ -124,5 +150,4 @@ if __name__ == '__main__':
             import time
             time.sleep(10)
         finally:
-            # Закрываем цикл событий после каждой итерации
             loop.close()
