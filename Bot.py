@@ -16,13 +16,10 @@ CREATOR_ID = 1321220840
 # Вставьте ID группы
 GROUP_CHAT_ID = -180025934882
 
-# Создаём Application
-application = Application.builder().token(TOKEN).build()
-
 # Порт для HTTP-сервера
 PORT = 8080
 
-# Глобальная переменная для HTTP-сервера
+# Глобальные переменные для HTTP-сервера
 httpd = None
 httpd_thread = None
 
@@ -75,7 +72,8 @@ def stop_webhook_server():
 
 # Функция для отправки периодического сообщения
 async def send_periodic_message(context):
-    if not context.application.running:
+    application = context.application
+    if not application.running:
         logger.warning("Application не запущен, пропускаю отправку сообщения")
         return
     try:
@@ -86,7 +84,7 @@ async def send_periodic_message(context):
         logger.info(f"Отправлено периодическое сообщение в группу {GROUP_CHAT_ID}")
     except Exception as e:
         logger.error(f"Ошибка при отправке периодического сообщения: {e}")
-        raise  # Поднимаем исключение, чтобы бот перезапустился
+        raise  # Поднимаем исключение для перезапуска
 
 # Callback для настройки периодических задач после запуска
 async def on_startup(context):
@@ -144,9 +142,9 @@ async def error_handler(update, context):
             chat_id=CREATOR_ID,
             text=f"Произошла ошибка: {context.error}"
         )
-    raise  # Поднимаем исключение, чтобы бот перезапустился
+    raise  # Поднимаем исключение для перезапуска
 
-async def shutdown():
+async def shutdown(application):
     logger.info("Останавливаем бота...")
     try:
         if application.job_queue:
@@ -165,7 +163,9 @@ async def shutdown():
         logger.error(f"Ошибка при остановке бота: {e}")
 
 async def main():
-    global application
+    # Создаём Application
+    application = Application.builder().token(TOKEN).build()
+    
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & filters.ChatType.PRIVATE, forward_message))
@@ -192,26 +192,27 @@ async def main():
     httpd_thread.start()
 
     logger.info("Бот запущен, жду обновлений через вебхуки...")
-
+    
     # Держим приложение запущенным
-    while True:
-        try:
+    try:
+        while True:
             await asyncio.sleep(3600)  # Спим 1 час
-        except asyncio.CancelledError:
-            break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await shutdown(application)
 
 if __name__ == '__main__':
     while True:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             loop.run_until_complete(main())
         except Exception as e:
             logger.error(f"Бот упал с ошибкой: {e}. Перезапускаю...")
             import time
             time.sleep(10)
         finally:
-            loop.run_until_complete(shutdown())
             stop_webhook_server()
             pending = asyncio.all_tasks(loop=loop)
             for task in pending:
@@ -225,5 +226,3 @@ if __name__ == '__main__':
                 logger.info("Цикл событий закрыт")
             except Exception as e:
                 logger.error(f"Ошибка при закрытии цикла событий: {e}")
-            # Пересоздаём Application для следующей итерации
-            application = Application.builder().token(TOKEN).build()
